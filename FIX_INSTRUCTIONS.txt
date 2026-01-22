@@ -1,0 +1,18 @@
+# Fix for your CMakeLists.txt
+# Add usb-hid-kbd.c to your SOURCES section
+
+# Before (your current):
+set(SOURCES
+  src/main.c
+  # ...
+)
+
+# After (what it should be):
+set(SOURCES
+  src/main.c
+  usb-hid-kbd.c
+  # ...
+)
+
+# Make sure usb-hid-kbd.c and usb-hid-kbd.h are in your ~/Keyboard directory
+# (at the same level as CMakeLists.txt, NOT in src/)
