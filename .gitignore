@@ -16,3 +16,4 @@ giteapc-config-*.make
 old/**
 
 *.sh
+HID_FIX_SUMMARY.md

@@ -21,7 +21,7 @@ static usb_dc_interface_t dc_interface = {
     .iInterface           = 0,
 };
 
-/* HID Descriptor */
+/* HID Descriptor - must be exactly 9 bytes, no padding */
 typedef struct {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
@@ -30,17 +30,7 @@ typedef struct {
     uint8_t  bNumDescriptors;
     uint8_t  bDescriptorType2;
     uint16_t wDescriptorLength;
-} GPACKED(4) usb_dc_hid_t;
-
-static usb_dc_hid_t dc_hid = {
-    .bLength            = sizeof(usb_dc_hid_t),
-    .bDescriptorType    = 0x21, /* HID */
-    .bcdHID             = htole16(0x0111), /* HID 1.11 */
-    .bCountryCode       = 0, /* Not localized */
-    .bNumDescriptors    = 1,
-    .bDescriptorType2   = 0x22, /* Report descriptor */
-    .wDescriptorLength  = htole16(63), /* Report descriptor length */
-};
+} GPACKED(1) usb_dc_hid_t;
 
 /* HID Report Descriptor for boot keyboard */
 static uint8_t const hid_report_descriptor[] = {
@@ -89,6 +79,90 @@ static uint8_t const hid_report_descriptor[] = {
     0xC0               /* End Collection */
 };
 
+/* Wrapper descriptor for the report descriptor to be sent during GET_DESCRIPTOR */
+typedef struct {
+    uint8_t bLength;
+    uint8_t bDescriptorType;  /* 0x22 = Report */
+    uint8_t data[];  /* Flexible array for the actual report descriptor */
+} GPACKED(1) usb_dc_hid_report_descriptor_t;
+
+/* Create a wrapper that points to our report descriptor data */
+static struct {
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t data[sizeof(hid_report_descriptor)];
+} hid_report_descriptor_wrapper = {
+    .bLength = 2 + sizeof(hid_report_descriptor),
+    .bDescriptorType = 0x22,  /* Report Descriptor type */
+    .data = {
+        0x05, 0x01,        /* Usage Page (Generic Desktop) */
+        0x09, 0x06,        /* Usage (Keyboard) */
+        0xA1, 0x01,        /* Collection (Application) */
+        
+        /* Modifier keys */
+        0x05, 0x07,        /*   Usage Page (Key Codes) */
+        0x19, 0xE0,        /*   Usage Minimum (224) */
+        0x29, 0xE7,        /*   Usage Maximum (231) */
+        0x15, 0x00,        /*   Logical Minimum (0) */
+        0x25, 0x01,        /*   Logical Maximum (1) */
+        0x75, 0x01,        /*   Report Size (1) */
+        0x95, 0x08,        /*   Report Count (8) */
+        0x81, 0x02,        /*   Input (Data, Variable, Absolute) */
+        
+        /* Reserved byte */
+        0x95, 0x01,        /*   Report Count (1) */
+        0x75, 0x08,        /*   Report Size (8) */
+        0x81, 0x01,        /*   Input (Constant) */
+        
+        /* LED report */
+        0x95, 0x05,        /*   Report Count (5) */
+        0x75, 0x01,        /*   Report Size (1) */
+        0x05, 0x08,        /*   Usage Page (LEDs) */
+        0x19, 0x01,        /*   Usage Minimum (1) */
+        0x29, 0x05,        /*   Usage Maximum (5) */
+        0x91, 0x02,        /*   Output (Data, Variable, Absolute) */
+        
+        /* LED report padding */
+        0x95, 0x01,        /*   Report Count (1) */
+        0x75, 0x03,        /*   Report Size (3) */
+        0x91, 0x01,        /*   Output (Constant) */
+        
+        /* Key arrays (6 keys) */
+        0x95, 0x06,        /*   Report Count (6) */
+        0x75, 0x08,        /*   Report Size (8) */
+        0x15, 0x00,        /*   Logical Minimum (0) */
+        0x25, 0x65,        /*   Logical Maximum (101) */
+        0x05, 0x07,        /*   Usage Page (Key Codes) */
+        0x19, 0x00,        /*   Usage Minimum (0) */
+        0x29, 0x65,        /*   Usage Maximum (101) */
+        0x81, 0x00,        /*   Input (Data, Array) */
+        
+        0xC0               /* End Collection */
+    }
+};
+
+/* HID descriptor as raw bytes to avoid any struct padding issues */
+static uint8_t const dc_hid_raw[] = {
+    9,          /* bLength */
+    0x21,       /* bDescriptorType (HID) */
+    0x11, 0x01, /* bcdHID (1.11) little-endian */
+    0,          /* bCountryCode */
+    1,          /* bNumDescriptors */
+    0x22,       /* bDescriptorType (Report) */
+    63, 0,      /* wDescriptorLength (63) little-endian */
+};
+
+/* Keep struct for reference but use raw bytes */
+static usb_dc_hid_t dc_hid = {
+    .bLength            = 9,  /* HID descriptor is exactly 9 bytes */
+    .bDescriptorType    = 0x21, /* HID */
+    .bcdHID             = htole16(0x0111), /* HID 1.11 */
+    .bCountryCode       = 0, /* Not localized */
+    .bNumDescriptors    = 1,
+    .bDescriptorType2   = 0x22, /* Report descriptor */
+    .wDescriptorLength  = htole16(sizeof(hid_report_descriptor)),
+};
+
 /* Endpoint for keyboard reports (calculator -> PC) */
 static usb_dc_endpoint_t dc_endpoint_in = {
     .bLength             = sizeof(usb_dc_endpoint_t),
@@ -103,8 +177,9 @@ usb_interface_t const usb_hid_kbd = {
     /* List of descriptors */
     .dc = (void const *[]){
         &dc_interface,
-        &dc_hid,
+        dc_hid_raw,  /* Use raw bytes to avoid padding issues */
         &dc_endpoint_in,
+        &hid_report_descriptor_wrapper,
         NULL,
     },
     /* Parameters for each endpoint */

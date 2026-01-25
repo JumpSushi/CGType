@@ -82,6 +82,8 @@ static void write_configuration_descriptor(int wLength)
 	for(int k = 0; interfaces[i]->dc[k]; k++)
 	{
 		uint8_t const *dc = interfaces[i]->dc[k];
+		/* Skip HID report descriptors (0x22) - they're fetched separately */
+		if(dc[1] == 0x22) continue;
 		total_length += dc[0];
 	}
 	USB_LOG("Configuration descriptor size: %d\n", (int)total_length);
@@ -97,6 +99,9 @@ static void write_configuration_descriptor(int wLength)
 	for(int k = 0; interfaces[i]->dc[k]; k++)
 	{
 		uint8_t const *dc = interfaces[i]->dc[k];
+
+		/* Skip HID report descriptors (0x22) - they're fetched separately */
+		if(dc[1] == 0x22) continue;
 
 		/* Edit interface numbers on-the-fly */
 		if(dc[1] == USB_DC_INTERFACE)
@@ -114,7 +119,7 @@ static void write_configuration_descriptor(int wLength)
 			edc.bEndpointAddress = e->global_address;
 			dcp_write(&edc, edc.bLength);
 		}
-		/* Forward other descriptors */
+		/* Forward other descriptors (e.g. HID descriptor 0x21) */
 		else dcp_write(dc, dc[0]);
 	}
 }
@@ -169,39 +174,49 @@ static void req_get_hid_report_descriptor(int interface_num, int wLength)
 	if(interface_num >= 0 && interfaces[interface_num]) {
 		usb_interface_t const *iface = interfaces[interface_num];
 		
-		/* Look for the HID descriptor in this interface's descriptors */
+		/* Look for the report descriptor (type 0x22) in this interface's descriptors */
 		for(int k = 0; iface->dc[k]; k++) {
 			uint8_t const *dc = iface->dc[k];
-			/* HID descriptor type is 0x21 */
-			if(dc[1] == 0x21) {
-				/* HID descriptor found - now find report descriptor in next descriptor */
-				for(int j = k + 1; iface->dc[j]; j++) {
-					uint8_t const *report_dc = iface->dc[j];
-					/* Check if this looks like report descriptor data */
-					/* We'll just send whatever follows the HID descriptor */
-					/* For proper implementation, store report descriptor separately */
-				}
-				/* For now, send a standard boot keyboard report descriptor */
-				/* This should really be stored with the interface */
-				static uint8_t const hid_kbd_report_desc[] = {
-					0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07,
-					0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
-					0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01,
-					0x75, 0x08, 0x81, 0x01, 0x95, 0x05, 0x75, 0x01,
-					0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02,
-					0x95, 0x01, 0x75, 0x03, 0x91, 0x01, 0x95, 0x06,
-					0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
-					0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0
-				};
-				int size = sizeof(hid_kbd_report_desc);
-				if(size > wLength) size = wLength;
-				dcp_write(hid_kbd_report_desc, size);
+			/* Report descriptor type is 0x22 */
+			if(dc[1] == 0x22) {
+				/* Found the report descriptor - send payload only (skip header) */
+				int total_size = dc[0]; /* bLength includes header */
+				if(total_size < 2) break; /* Malformed */
+				int payload_size = total_size - 2;
+				if(payload_size > wLength) payload_size = wLength;
+				dcp_write(dc + 2, payload_size);
 				return;
 			}
 		}
 	}
 	
-	/* Interface not found or not HID - stall */
+	/* Interface not found or no report descriptor - stall */
+	USB.DCPCTR.PID = 2;
+}
+
+static void req_get_hid_descriptor(int interface_num, int wLength)
+{
+	USB_LOG("GET_HID_DESCRIPTOR: interface %d len:%d\n",
+		interface_num, wLength);
+
+	usb_interface_t const * const *interfaces = usb_configure_interfaces();
+
+	if(interface_num >= 0 && interfaces[interface_num]) {
+		usb_interface_t const *iface = interfaces[interface_num];
+
+		/* HID descriptor type is 0x21 */
+		for(int k = 0; iface->dc[k]; k++) {
+			uint8_t const *dc = iface->dc[k];
+			if(dc[1] == 0x21) {
+				int size = dc[0];
+				if(size > wLength) size = wLength;
+				dcp_write(dc, size);
+				return;
+			}
+		}
+	}
+
+	/* Interface not found or no HID descriptor - stall */
 	USB.DCPCTR.PID = 2;
 }
 
@@ -232,9 +247,11 @@ void usb_req_setup(void)
 	else if(bmRequestType == 0x81 && bRequest == GET_DESCRIPTOR)
 	{
 		int desc_type = (wValue >> 8) & 0xff;
-		/* 0x22 = Report Descriptor */
+		/* 0x21 = HID descriptor, 0x22 = Report descriptor */
 		if(desc_type == 0x22)
 			req_get_hid_report_descriptor(wIndex, wLength);
+		else if(desc_type == 0x21)
+			req_get_hid_descriptor(wIndex, wLength);
 		else USB_LOG("SETUP: HID GET_DESCRIPTOR type=%02x -> ???\n", desc_type);
 	}
 
